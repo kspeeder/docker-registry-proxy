@@ -1,23 +1,37 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 )
 
+var logger = log.Default()
+
 type RevalidateWithHEAD struct {
 	DefaultTransport http.RoundTripper
+	Remaining        string
 }
 
+func (self *RevalidateWithHEAD) LogRoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := self.DefaultTransport.RoundTrip(req)
+	if err == nil {
+		remaining := resp.Header.Get("ratelimit-remaining")
+		if remaining != "" && remaining != self.Remaining {
+			logger.Printf("ratelimit-remaining: %s\n", remaining)
+			self.Remaining = remaining
+		}
+	}
+	return resp, err
+}
 func (self *RevalidateWithHEAD) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Method == "GET" {
 		etag := req.Header.Get("If-None-Match")
 
 		if etag != "" {
 			req.Method = "HEAD"
-			resp, err := self.DefaultTransport.RoundTrip(req)
+			resp, err := self.LogRoundTrip(req)
 			req.Method = "GET"
 
 			if err != nil || resp.StatusCode != 200 {
@@ -40,7 +54,7 @@ func (self *RevalidateWithHEAD) RoundTrip(req *http.Request) (*http.Response, er
 			}
 		}
 	}
-	return self.DefaultTransport.RoundTrip(req)
+	return self.LogRoundTrip(req)
 }
 
 func newDockerReverseProxy(target *url.URL) *httputil.ReverseProxy {
@@ -61,7 +75,6 @@ func newDockerReverseProxy(target *url.URL) *httputil.ReverseProxy {
 }
 
 func main() {
-
 	localAddr := "127.0.0.1:5000"
 
 	dockerURL, _ := url.Parse("https://registry-1.docker.io")
@@ -71,6 +84,6 @@ func main() {
 		Handler: dockerReverse,
 	}
 	defer proxyServer.Close()
-	fmt.Println("start docker registry proxy server on", localAddr)
+	logger.Printf("start docker registry proxy server on %s\n", localAddr)
 	proxyServer.ListenAndServe()
 }
